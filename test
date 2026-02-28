@@ -1,0 +1,357 @@
+import React, { useState, useMemo, useEffect } from 'react';
+import { Save, Send, Calendar, User, Building, FileText, CheckCircle, AlertCircle, XCircle } from 'lucide-react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, collection, addDoc, serverTimestamp } from 'firebase/firestore';
+
+// 初始化 Firebase 連線
+// Import the functions you need from the SDKs you need
+import { initializeApp } from "firebase/app";
+import { getAnalytics } from "firebase/analytics";
+// TODO: Add SDKs for Firebase products that you want to use
+// https://firebase.google.com/docs/web/setup#available-libraries
+
+// Your web app's Firebase configuration
+// For Firebase JS SDK v7.20.0 and later, measurementId is optional
+const firebaseConfig = {
+  apiKey: "AIzaSyD7LlU63mxBoSyu_pVHKKcU_X395ozuyqk",
+  authDomain: "sales-report-system-14821.firebaseapp.com",
+  projectId: "sales-report-system-14821",
+  storageBucket: "sales-report-system-14821.firebasestorage.app",
+  messagingSenderId: "922464564109",
+  appId: "1:922464564109:web:1f54213746b3ea6999c3c4",
+  measurementId: "G-5Z8LLRRZVY"
+};
+
+// Initialize Firebase
+const app = initializeApp(firebaseConfig);
+const analytics = getAnalytics(app);
+
+const METHODS = ['(請選擇)', '實體拜訪', '電話聯繫', 'Line/通訊軟體', '駐點服務', '陪同看屋/簽約'];
+const PURPOSES = ['(請選擇)', '陌生開發', '關係維護/送禮', '房貸專案推廣', '協助房屋估價', '收取進件資料', '補件與照會說明', '簽約對保'];
+const STATUSES = ['(請選擇)', '持續追蹤', '評估/估價中', '準備進件', '徵審審查中', '婉拒/條件不符', '核准待對保', '已對保待撥款', '已撥款結案'];
+
+const initialSchedule = [
+  { id: 1, day: '星期一', timeSlot: '上午', client: '', contact: '', method: '', purpose: '', amount: '', status: '', followUp: '' },
+  { id: 2, day: '星期一', timeSlot: '下午', client: '', contact: '', method: '', purpose: '', amount: '', status: '', followUp: '' },
+  { id: 3, day: '星期二', timeSlot: '上午', client: '', contact: '', method: '', purpose: '', amount: '', status: '', followUp: '' },
+  { id: 4, day: '星期二', timeSlot: '下午', client: '', contact: '', method: '', purpose: '', amount: '', status: '', followUp: '' },
+  { id: 5, day: '星期三', timeSlot: '上午', client: '', contact: '', method: '', purpose: '', amount: '', status: '', followUp: '' },
+  { id: 6, day: '星期三', timeSlot: '下午', client: '', contact: '', method: '', purpose: '', amount: '', status: '', followUp: '' },
+  { id: 7, day: '星期四', timeSlot: '上午', client: '', contact: '', method: '', purpose: '', amount: '', status: '', followUp: '' },
+  { id: 8, day: '星期四', timeSlot: '下午', client: '', contact: '', method: '', purpose: '', amount: '', status: '', followUp: '' },
+  { id: 9, day: '星期五', timeSlot: '上午', client: '', contact: '', method: '', purpose: '', amount: '', status: '', followUp: '' },
+  { id: 10, day: '星期五', timeSlot: '下午', client: '', contact: '', method: '', purpose: '', amount: '', status: '', followUp: '' },
+];
+
+export default function App() {
+  const [basicInfo, setBasicInfo] = useState({ week: '', name: '', area: '' });
+  const [schedule, setSchedule] = useState(initialSchedule);
+  const [summary, setSummary] = useState({ progress: '', weeklySummary: '', assistance: '', nextPlan: '' });
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [showSuccess, setShowSuccess] = useState(false);
+  const [user, setUser] = useState(null);
+  const [errorMsg, setErrorMsg] = useState('');
+
+  // 1. 初始化登入驗證
+  useEffect(() => {
+    if (!auth) return;
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (err) {
+        console.error("系統登入失敗:", err);
+        setErrorMsg("無法連線至雲端系統，可能無法成功儲存報表。");
+      }
+    };
+    initAuth();
+    
+    // 監聽登入狀態
+    const unsubscribe = onAuthStateChanged(auth, setUser);
+    return () => unsubscribe();
+  }, []);
+
+  // 計算總預估申貸金額
+  const totalAmount = useMemo(() => {
+    return schedule.reduce((sum, item) => {
+      const val = parseFloat(item.amount);
+      return sum + (isNaN(val) ? 0 : val);
+    }, 0);
+  }, [schedule]);
+
+  // 處理基本資料變更
+  const handleBasicInfoChange = (field, value) => {
+    setBasicInfo(prev => ({ ...prev, [field]: value }));
+  };
+
+  // 處理行程表格變更
+  const handleScheduleChange = (id, field, value) => {
+    setSchedule(prev => prev.map(item => item.id === id ? { ...item, [field]: value } : item));
+  };
+
+  // 處理總結變更
+  const handleSummaryChange = (field, value) => {
+    setSummary(prev => ({ ...prev, [field]: value }));
+  };
+
+  // 決定狀態的紅綠燈顏色
+  const getStatusColor = (status) => {
+    if (status === '已撥款結案') return 'bg-green-100 text-green-800 border-green-300';
+    if (status === '徵審審查中' || status === '評估/估價中') return 'bg-yellow-100 text-yellow-800 border-yellow-300';
+    if (status === '婉拒/條件不符') return 'bg-red-100 text-red-800 border-red-300';
+    if (status && status !== '(請選擇)') return 'bg-blue-50 text-blue-800 border-blue-200';
+    return 'bg-white text-gray-700 border-gray-300';
+  };
+
+  // 模擬送出表單改成真實的雲端儲存
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!user || !db) {
+      setErrorMsg('系統尚未準備好，請確認網路連線或稍後再試。');
+      return;
+    }
+
+    setIsSubmitting(true);
+    setErrorMsg('');
+
+    try {
+      // 整理要存入資料庫的報表資料
+      const reportData = {
+        userId: user.uid,
+        basicInfo,
+        schedule,
+        summary,
+        totalAmount,
+        status: '已送出',
+        submittedAt: serverTimestamp() // 紀錄精準的送出時間
+      };
+
+      // 寫入 Firestore 資料庫的 reports 集合中
+      const reportsRef = collection(db, 'artifacts', appId, 'public', 'data', 'reports');
+      await addDoc(reportsRef, reportData);
+
+      setShowSuccess(true);
+      // 3秒後關閉成功提示
+      setTimeout(() => setShowSuccess(false), 3000);
+      
+    } catch (err) {
+      console.error("報表儲存失敗:", err);
+      setErrorMsg('報表送出失敗，請再試一次。');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-50 py-8 px-4 sm:px-6 lg:px-8 font-sans">
+      <div className="max-w-7xl mx-auto space-y-6">
+        
+        {/* 標題區 */}
+        <div className="bg-white rounded-xl shadow-sm p-6 border border-slate-200 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+          <div>
+            <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+              <FileText className="text-blue-600" />
+              業務一週行程與工作報表系統
+            </h1>
+            <p className="text-slate-500 mt-1 text-sm">請確實填寫本週行程與業務狀況，並於每週五下班前送出。</p>
+          </div>
+          <div className="flex gap-3">
+            <button className="px-4 py-2 bg-white border border-slate-300 rounded-lg text-slate-700 hover:bg-slate-50 flex items-center gap-2 transition-colors font-medium">
+              <Save size={18} />
+              暫存進度
+            </button>
+            <button 
+              onClick={handleSubmit}
+              disabled={isSubmitting}
+              className="px-4 py-2 bg-blue-600 rounded-lg text-white hover:bg-blue-700 flex items-center gap-2 transition-colors font-medium disabled:opacity-70"
+            >
+              {isSubmitting ? <span className="animate-spin text-white">⏳</span> : <Send size={18} />}
+              {isSubmitting ? '傳送中...' : '送出報表給主管'}
+            </button>
+          </div>
+        </div>
+
+        {/* 成功提示 Modal */}
+        {showSuccess && (
+          <div className="fixed top-4 right-4 bg-green-100 border border-green-400 text-green-800 px-6 py-4 rounded-lg shadow-lg flex items-center gap-3 animate-fade-in-down z-50">
+            <CheckCircle className="text-green-600" />
+            <div>
+              <p className="font-bold">送出成功！</p>
+              <p className="text-sm">您的週報已成功儲存至雲端資料庫。</p>
+            </div>
+          </div>
+        )}
+
+        {/* 錯誤提示 Modal */}
+        {errorMsg && (
+          <div className="fixed top-4 right-4 bg-red-100 border border-red-400 text-red-800 px-6 py-4 rounded-lg shadow-lg flex items-center gap-3 animate-fade-in-down z-50">
+            <XCircle className="text-red-600" />
+            <div>
+              <p className="font-bold">發生錯誤</p>
+              <p className="text-sm">{errorMsg}</p>
+            </div>
+            <button onClick={() => setErrorMsg('')} className="ml-2 text-red-600 hover:text-red-800 font-bold">✕</button>
+          </div>
+        )}
+
+        {/* 一、 基本資料 */}
+        <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+          <div className="bg-slate-100 px-6 py-4 border-b border-slate-200">
+            <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+              <span className="bg-blue-600 text-white w-6 h-6 rounded-full inline-flex items-center justify-center text-sm">1</span>
+              基本資料
+            </h2>
+          </div>
+          <div className="p-6 grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1 flex items-center gap-1"><Calendar size={16} /> 週別</label>
+              <input type="text" placeholder="例：2026年 第42週" className="w-full border border-slate-300 rounded-md px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none" value={basicInfo.week} onChange={e => handleBasicInfoChange('week', e.target.value)} />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1 flex items-center gap-1"><User size={16} /> 業務姓名</label>
+              <input type="text" placeholder="您的姓名" className="w-full border border-slate-300 rounded-md px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none" value={basicInfo.name} onChange={e => handleBasicInfoChange('name', e.target.value)} />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1 flex items-center gap-1"><Building size={16} /> 所屬區域/單位</label>
+              <input type="text" placeholder="例：北區一處" className="w-full border border-slate-300 rounded-md px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none" value={basicInfo.area} onChange={e => handleBasicInfoChange('area', e.target.value)} />
+            </div>
+          </div>
+        </div>
+
+        {/* 二、 行程紀錄 */}
+        <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+          <div className="bg-slate-100 px-6 py-4 border-b border-slate-200 flex justify-between items-center">
+            <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+              <span className="bg-blue-600 text-white w-6 h-6 rounded-full inline-flex items-center justify-center text-sm">2</span>
+              本週行程與訪談紀錄
+            </h2>
+            <div className="text-sm font-bold bg-blue-50 text-blue-700 px-4 py-2 rounded-lg border border-blue-200">
+              預估申貸總額：<span className="text-lg">{totalAmount}</span> 萬元
+            </div>
+          </div>
+          
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm text-left">
+              <thead className="text-xs text-slate-600 uppercase bg-slate-50 border-b border-slate-200">
+                <tr>
+                  <th className="px-4 py-3 min-w-[100px]">星期 / 時段</th>
+                  <th className="px-4 py-3 min-w-[180px]">拜訪通路/對象</th>
+                  <th className="px-4 py-3 min-w-[120px]">聯絡人</th>
+                  <th className="px-4 py-3 min-w-[140px]">拜訪方式</th>
+                  <th className="px-4 py-3 min-w-[150px]">洽談目的與進度</th>
+                  <th className="px-4 py-3 min-w-[100px]">預估金額(萬)</th>
+                  <th className="px-4 py-3 min-w-[160px]">結果與進度狀態</th>
+                  <th className="px-4 py-3 min-w-[180px]">後續追蹤與預估撥款</th>
+                </tr>
+              </thead>
+              <tbody>
+                {schedule.map((row, index) => (
+                  <tr key={row.id} className={`border-b border-slate-100 hover:bg-slate-50 transition-colors ${index % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}`}>
+                    <td className="px-4 py-2 font-medium text-slate-800">
+                      <div className="flex flex-col">
+                        <span>{row.day}</span>
+                        <span className="text-xs text-slate-500">{row.timeSlot}</span>
+                      </div>
+                    </td>
+                    <td className="px-4 py-2">
+                      <input type="text" className="w-full border-gray-300 rounded px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 border bg-white" placeholder="分行/房仲/代書..." value={row.client} onChange={(e) => handleScheduleChange(row.id, 'client', e.target.value)} />
+                    </td>
+                    <td className="px-4 py-2">
+                      <input type="text" className="w-full border-gray-300 rounded px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 border bg-white" placeholder="姓名" value={row.contact} onChange={(e) => handleScheduleChange(row.id, 'contact', e.target.value)} />
+                    </td>
+                    <td className="px-4 py-2">
+                      <select className="w-full border-gray-300 rounded px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 border bg-white cursor-pointer" value={row.method} onChange={(e) => handleScheduleChange(row.id, 'method', e.target.value)}>
+                        {METHODS.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                      </select>
+                    </td>
+                    <td className="px-4 py-2">
+                      <select className="w-full border-gray-300 rounded px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 border bg-white cursor-pointer" value={row.purpose} onChange={(e) => handleScheduleChange(row.id, 'purpose', e.target.value)}>
+                        {PURPOSES.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                      </select>
+                    </td>
+                    <td className="px-4 py-2">
+                      <input type="number" min="0" className="w-full border-gray-300 rounded px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 border bg-white text-right" placeholder="0" value={row.amount} onChange={(e) => handleScheduleChange(row.id, 'amount', e.target.value)} />
+                    </td>
+                    <td className="px-4 py-2">
+                      <select 
+                        className={`w-full rounded px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 border cursor-pointer font-medium transition-colors ${getStatusColor(row.status)}`}
+                        value={row.status} 
+                        onChange={(e) => handleScheduleChange(row.id, 'status', e.target.value)}
+                      >
+                        {STATUSES.map(opt => <option key={opt} value={opt} className="bg-white text-slate-800">{opt}</option>)}
+                      </select>
+                    </td>
+                    <td className="px-4 py-2">
+                      <input type="text" className="w-full border-gray-300 rounded px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 border bg-white" placeholder="追蹤事項或日期" value={row.followUp} onChange={(e) => handleScheduleChange(row.id, 'followUp', e.target.value)} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* 三、 業務總結 */}
+        <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+          <div className="bg-slate-100 px-6 py-4 border-b border-slate-200">
+            <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+              <span className="bg-blue-600 text-white w-6 h-6 rounded-full inline-flex items-center justify-center text-sm">3</span>
+              本週業務總結與協助需求
+            </h2>
+          </div>
+          <div className="p-6 space-y-5">
+            <div>
+              <label className="block text-sm font-bold text-slate-700 mb-1">🎯 當月撥款進度</label>
+              <input type="text" placeholder="例：本月目標 5000 萬 / 目前已撥款 3000 萬 / 達成率 60%" className="w-full border border-slate-300 rounded-md px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none" value={summary.progress} onChange={e => handleSummaryChange('progress', e.target.value)} />
+            </div>
+            <div>
+              <label className="block text-sm font-bold text-slate-700 mb-1">📝 本週工作總結</label>
+              <textarea rows="2" placeholder="請簡述本週進件量、撥款目標達成狀況或通路市場反饋..." className="w-full border border-slate-300 rounded-md px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none resize-none" value={summary.weeklySummary} onChange={e => handleSummaryChange('weeklySummary', e.target.value)}></textarea>
+            </div>
+            <div>
+              <label className="block text-sm font-bold text-slate-700 mb-1 text-orange-600 flex items-center gap-1">
+                <AlertCircle size={16} /> 需要協助事項
+              </label>
+              <textarea rows="2" placeholder="請列出遇到困難、需要主管支援或需與徵審/作業部門協調的案件..." className="w-full border border-orange-200 bg-orange-50 rounded-md px-3 py-2 focus:ring-2 focus:ring-orange-500 focus:border-orange-500 outline-none resize-none" value={summary.assistance} onChange={e => handleSummaryChange('assistance', e.target.value)}></textarea>
+            </div>
+            <div>
+              <label className="block text-sm font-bold text-slate-700 mb-1">📅 下週重點計畫</label>
+              <textarea rows="2" placeholder="請列出下週預計優先拜訪的通路、預計推動的大額案件或專案..." className="w-full border border-slate-300 rounded-md px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none resize-none" value={summary.nextPlan} onChange={e => handleSummaryChange('nextPlan', e.target.value)}></textarea>
+            </div>
+          </div>
+        </div>
+
+        {/* 四、 主管審閱區 (唯讀) */}
+        <div className="bg-slate-50 rounded-xl shadow-inner border border-slate-200 overflow-hidden opacity-80">
+          <div className="bg-slate-200 px-6 py-3 border-b border-slate-300">
+            <h2 className="text-md font-bold text-slate-600 flex items-center gap-2">
+              🔒 主管審閱與指導 (主管專用區)
+            </h2>
+          </div>
+          <div className="p-6">
+            <div className="bg-white border border-slate-300 rounded-md p-4 text-slate-400 italic text-center min-h-[100px] flex items-center justify-center">
+              (表單送出後，將由主管於後台系統填寫指導建議)
+            </div>
+          </div>
+        </div>
+
+        {/* 底部送出按鈕 (Mobile 友善) */}
+        <div className="pt-4 pb-8 flex justify-center sm:justify-end">
+           <button 
+              onClick={handleSubmit}
+              disabled={isSubmitting}
+              className="w-full sm:w-auto px-8 py-4 bg-blue-600 rounded-xl text-white hover:bg-blue-700 flex items-center justify-center gap-2 transition-colors font-bold text-lg shadow-lg shadow-blue-600/30 disabled:opacity-70 disabled:shadow-none"
+            >
+              {isSubmitting ? <span className="animate-spin text-white">⏳</span> : <Send size={24} />}
+              {isSubmitting ? '資料處理中...' : '確認送出本週報表'}
+            </button>
+        </div>
+
+      </div>
+    </div>
+  );
+}
